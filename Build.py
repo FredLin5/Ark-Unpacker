@@ -52,10 +52,26 @@ def __get_proj_info():
 def __get_build_def(proj_dir, venv_dir):
     try:
         config = toml.load("pyproject.toml")
-        return {
-            k: v.replace("$project$", proj_dir).replace("$venv$", venv_dir)
-            for k, v in config["tool"]["build"].items()
-        }
+        build_def_raw = config["tool"]["build"]
+
+        # 动态获取适用于当前平台的 site-packages 路径
+        import site
+        from pathlib import Path
+
+        site_packages = Path(site.getsitepackages()[0])
+
+        build_def = {}
+        for k, v in build_def_raw.items():
+            # 优先替换 $venv$ 为 site-packages 路径所在目录
+            v = v.replace("$project$", proj_dir)
+            v = v.replace("$venv$/Lib/site-packages", str(site_packages))  # Windows
+            v = v.replace("$venv$/lib/site-packages", str(site_packages))  # Linux/macOS fallback
+            v = v.replace("$venv$", venv_dir)  # 最后兜底替换
+
+            build_def[k] = v
+
+        return build_def
+
     except Exception as arg:
         print("× Failed to parse build definition fields.")
         raise arg

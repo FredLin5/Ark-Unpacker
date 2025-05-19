@@ -33,16 +33,23 @@ class Logger:
         self._reset_stats()
 
         def loop(self: Logger):
+            buffer = []
             while True:
                 try:
-                    t = self._queue.get(timeout=1)
-                    if self._log_file_path:
+                    while len(buffer) < 0x10:
+                        try:
+                            timeout = 1 / ((len(buffer) + 1) ** 2)
+                            buffer.append(self._queue.get(timeout=timeout))
+                        except queue.Empty:
+                            break
+                    if buffer and self._log_file_path:
                         with open(
                             self._log_file_path,
                             "a",
                             encoding=Logger.__file_encoding,
                         ) as f:
-                            f.write(t)
+                            f.writelines(buffer)
+                    buffer.clear()
                 except BaseException:
                     pass
 
@@ -52,7 +59,8 @@ class Logger:
         self.thread.start()
 
     def _set_level(self, level: int):
-        self._log_level = level
+        if level is not None:
+            self._log_level = level
 
     def _reset_stats(self):
         with self._internal_lock:

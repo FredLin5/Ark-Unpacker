@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2022-2025, Harry Huang
 # @ BSD 3-Clause License
-import argparse
+from typing import Callable, Optional
+
 import os
 import os.path as osp
+import re
 import sys
 import time
 
@@ -13,6 +15,7 @@ from src.utils.Logger import Logger
 from src.utils.GlobalMethods import color, input, print, clear, title, stacktrace, rmdir
 
 from src import ResolveAB as AU_Rs
+from src import ResolveSpine as AU_Sp
 from src import DecodeTextAsset as AU_Fb
 from src import CombineRGBwithA as AU_Cb
 from src import CollectModels as AU_Cm
@@ -20,7 +23,7 @@ from src import CollectVoice as AU_Cv
 from src import ModelsDataDist as AU_Mdd
 from src import VoiceDataDist as AU_Vdd
 
-ARKUNPACKER_VERSION = "v4.0"
+ARKUNPACKER_VERSION = "v4.1"
 ARKUNPACKER_LOCAL = "zh-CN"
 
 
@@ -36,8 +39,9 @@ def prt_homepage():
 2: 自定义资源解包
 3: 自定义图片合并
 4: 自定义文本资源解码
-5: ArkModels提取与分拣工具
-6: ArkVoice提取与分拣工具
+5: 自定义Spine模型导出
+6: ArkModels提取与分拣工具
+7: ArkVoice提取与分拣工具
 0: 退出""",
         c=6,
     )
@@ -58,9 +62,49 @@ def prt_continue():
     UserInput.request("\n> 按Enter以继续...")
 
 
+def warn_large_srcdir(srcdir: str, threshold: int = 10000):
+    if not osp.isdir(srcdir):
+        return
+    count = 0
+    for _, _, files in os.walk(srcdir):
+        count += len(files)
+        if count > threshold:
+            print("\n注意，所选的目录包含大量文件！", c=3)
+            print("  这可能导致耗时过长、占用大量内存和存储空间。")
+            print("  我们建议您仅对部分目录进行单独的操作。")
+            print("  您仍要继续本次任务吗？")
+            print("  请选择：[y]继续任务，[n]取消任务(默认)", c=3)
+            uin = UserInput.request().strip().lower()
+            if uin != "y":
+                print("  已取消任务", c=3)
+                raise InterruptedError("User cancelled due to large directory")
+            break
+
+
+def warn_dir_intersection(srcdir: str, destdir: str):
+    srcdir = os.path.abspath(srcdir)
+    destdir = os.path.abspath(destdir)
+
+    def is_subdir(parent, child):
+        parent = os.path.join(parent, "")
+        child = os.path.join(child, "")
+        return os.path.commonprefix([parent, child]) == parent
+
+    if srcdir == destdir or is_subdir(destdir, srcdir):
+        print("\n注意，源目录包含于导出目录中！", c=3)
+        print("  这可能导致数据覆盖等意外行为。")
+        print("  您仍要继续本次任务吗？")
+        print("  请选择：[y]继续任务，[n]取消任务(默认)", c=3)
+        uin = UserInput.request().strip().lower()
+        if uin != "y":
+            print("  已取消任务", c=3)
+            raise InterruptedError("User cancelled due to directory intersection")
+
+
 def run_quickaccess():
     Logger.info("CI: Run quick access.")
     title("ArkUnpacker - Processing")
+    warn_large_srcdir(".")
     destdir = f"Unpacked_{int(time.time())}"
     ###
     prt_subtitle("步骤1|资源解包")
@@ -77,17 +121,18 @@ def run_custom_resolve_ab():
     prt_subtitle("自定义资源解包")
     ###
     print("\n请输入要解包的目录或文件路径")
-    src = UserInput.request_path()
+    src = UserInput.request_input_path()
     print("解包目标路径：", c=2)
-    print(f"  {osp.abspath(src)}", c=6)
+    print(f"  {src}", c=6)
+    warn_large_srcdir(src)
     ###
     print("\n请输入导出目录的路径")
-    print("  支持相对路径，留空表示自动创建")
-    destdir = input("> ", c=2)
-    if not destdir:
-        destdir = f"Unpacked_{int(time.time())}"
+    destdir = UserInput.request_output_path(
+        default_generator=lambda: f"Unpacked_{int(time.time())}"
+    )
     print("导出目录路径：", c=2)
-    print(f"  {osp.abspath(destdir)}", c=6)
+    print(f"  {destdir}", c=6)
+    warn_dir_intersection(src, destdir)
     ###
     do_del = False
     if osp.isdir(destdir):
@@ -102,23 +147,21 @@ def run_custom_resolve_ab():
         separate = UserInput.request_yes_or_no(True)
     ###
     print("\n请输入要导出的资源类型")
-    print("  [i]图片，[t]文本，[a]音频", c=3)
-    print("  [s]Spine动画模型", c=3)
-    print('  示例输入："ita"，"ia"')
+    print("  [i]图片(纹理)，[t]文本，[a]音频，[m]3D模型(Mesh)", c=3)
+    print('  可多选，示例输入："itam"，"it"')
     do_them = input("> ", c=2).lower()
     do_img = True if "i" in do_them else False
     do_txt = True if "t" in do_them else False
     do_aud = True if "a" in do_them else False
-    do_spi = True if "s" in do_them else False
+    do_mesh = True if "m" in do_them else False
     print(
-        f"  [{'√' if do_img else '×'}]图片，[{'√' if do_txt else '×'}]文本，[{'√' if do_aud else '×'}]音频",
+        f"  [{'√' if do_img else '×'}]图片(纹理)，[{'√' if do_txt else '×'}]文本，[{'√' if do_aud else '×'}]音频，[{'√' if do_mesh else '×'}]3D模型(Mesh)",
         c=6,
     )
-    print(f"  [{'√' if do_spi else '×'}]Spine动画模型", c=6)
     ###
     prt_continue()
     title("ArkUnpacker - Processing")
-    AU_Rs.main(src, destdir, do_del, do_img, do_txt, do_aud, do_spi, separate)
+    AU_Rs.main(src, destdir, do_del, do_img, do_txt, do_aud, do_mesh, separate)
 
 
 def run_custom_combine_image():
@@ -126,17 +169,17 @@ def run_custom_combine_image():
     prt_subtitle("自定义合并图片")
     ###
     print("\n请输入源图片目录的路径")
-    rootdir = UserInput.request_path()
+    rootdir = UserInput.request_input_path()
     print("源图片目录路径：")
-    print(f"  {osp.abspath(rootdir)}", c=6)
+    print(f"  {rootdir}", c=6)
     ###
     print("\n请输入导出的目的地")
-    print("  支持相对路径，留空表示自动创建")
-    destdir = input("> ", c=2)
-    if not destdir:
-        destdir = f"Combined_{int(time.time())}"
+    destdir = UserInput.request_output_path(
+        default_generator=lambda: f"Combined_{int(time.time())}"
+    )
     print("您选择的导出目录是：")
-    print(f"  {osp.abspath(destdir)}", c=6)
+    print(f"  {destdir}", c=6)
+    warn_dir_intersection(rootdir, destdir)
     ###
     do_del = False
     if osp.isdir(destdir):
@@ -159,17 +202,17 @@ def run_custom_textasset_decode():
     print("在资源解包后需要对这些文件进行解码才可得到游戏数据。")
     print("\n请输入源文件目录的路径")
     print("若您不清楚哪些文件是TextAsset，请选择整个解包后的目录。")
-    rootdir = UserInput.request_path()
+    rootdir = UserInput.request_input_path()
     print(" 源文件的目录是：")
-    print(f"  {osp.abspath(rootdir)}", c=6)
+    print(f"  {rootdir}", c=6)
     ###
     print("\n请输入导出的目的地")
-    print("  支持相对路径，留空表示自动创建")
-    destdir = input("> ", c=2)
-    if not destdir:
-        destdir = f"Decoded_{int(time.time())}"
+    destdir = UserInput.request_output_path(
+        default_generator=lambda: f"Decoded_{int(time.time())}"
+    )
     print("您选择的导出目录是：")
-    print(f"  {osp.abspath(destdir)}", c=6)
+    print(f"  {destdir}", c=6)
+    warn_dir_intersection(rootdir, destdir)
     ###
     do_del = False
     if osp.isdir(destdir):
@@ -180,6 +223,40 @@ def run_custom_textasset_decode():
     prt_continue()
     title("ArkUnpacker - Processing")
     AU_Fb.main(rootdir, destdir, do_del)
+
+
+def run_custom_resolve_spine():
+    Logger.info("CI: Customized Spine export mode.")
+    prt_subtitle("自定义Spine模型导出")
+    ###
+    print("\n请输入要导出的目录或文件路径")
+    src = UserInput.request_input_path()
+    print("导出目标路径：", c=2)
+    print(f"  {src}", c=6)
+    ###
+    print("\n请输入导出目录的路径")
+    destdir = UserInput.request_output_path(
+        default_generator=lambda: f"Spine_{int(time.time())}"
+    )
+    print("导出目录路径：", c=2)
+    print(f"  {destdir}", c=6)
+    warn_dir_intersection(src, destdir)
+    ###
+    do_del = False
+    if osp.isdir(destdir):
+        print("\n该导出目录已存在，您要删除它里面的全部文件吗？")
+        print("  请!慎重!选择：[y]删除，[n]保留(默认)", c=3)
+        do_del = UserInput.request_yes_or_no(False)
+    ###
+    separate = True
+    if not osp.isfile(src):
+        print("\n是否对导出的文件按来源进行分组？")
+        print("  [y]是(默认)，[n]否", c=3)
+        separate = UserInput.request_yes_or_no(True)
+    ###
+    prt_continue()
+    title("ArkUnpacker - Processing")
+    AU_Sp.main(src, destdir, do_del, separate)
 
 
 def run_arkmodels_unpacking(dirs, destdir):
@@ -198,7 +275,7 @@ def run_arkmodels_unpacking(dirs, destdir):
     print("正在清理...")
     rmdir(destdir)
     for i in dirs:
-        AU_Rs.main(i, destdir, do_img=False, do_txt=False, do_aud=False, do_spine=True)
+        AU_Sp.main(i, destdir, do_del=False, separate=True)
 
 
 def run_arkmodels_anon_unpacking(dirs, destdir):
@@ -217,7 +294,15 @@ def run_arkmodels_anon_unpacking(dirs, destdir):
     print("正在清理...")
     rmdir(destdir)
     for i in dirs:
-        AU_Rs.main(i, destdir, do_img=False, do_txt=True, do_aud=False, do_spine=False)
+        AU_Rs.main(
+            i,
+            destdir,
+            do_del=False,
+            do_img=False,
+            do_txt=True,
+            do_aud=False,
+            separate=True,
+        )
 
 
 def run_arkmodels_filtering(dirs, destdirs):
@@ -248,13 +333,11 @@ def run_arkmodels_data_dist():
         if not osp.exists(i):
             print(f'在工作目录下找不到 {i}，请确认您先前已运行了"模型分拣"。', c=3)
             UserInput.request('> 输入符号 "*" 以取消任务，或直接按Enter以强制继续')
-            return
     if not osp.exists(AU_Mdd.ModelsDist.TEMP_DIR):
         print(
             f'在工作目录下找不到 {AU_Mdd.ModelsDist.TEMP_DIR}，请确认您先前已运行了"匿名数据提取"。',
             c=3,
         )
-        UserInput.request('> 输入符号 "*" 以取消任务，或直接按Enter以强制继续')
         return
     AU_Mdd.main()
 
@@ -277,8 +360,8 @@ def run_arkmodels_workflow():
         print(
             f"""功能选择：
 1: 一键执行
-2: 干员基建模型提取 ({visual('chararts')}, {visual('skinpack')})
-3: 敌方战斗模型提取 ({visual('battle')})
+2: 干员基建模型提取 ({visual('chararts')} 和 {visual('skinpack')})
+3: 敌方战斗模型提取 ({visual('battle')} 或 {visual('refs')})
 4: 动态立绘模型提取 ({visual('arts')})
 5: 匿名数据提取 ({visual(AU_Mdd.ModelsDist.GAMEDATA_DIR)})
 6: 模型分拣
@@ -304,7 +387,7 @@ def run_arkmodels_workflow():
         if order == "2" or wildcard:
             run_arkmodels_unpacking(["chararts", "skinpack"], temp_dir_1)
         if order == "3" or wildcard:
-            run_arkmodels_unpacking(["battle/prefabs/enemies"], temp_dir_2)
+            run_arkmodels_unpacking(["battle/prefabs/enemies", "refs/arts"], temp_dir_2)
         if order == "4" or wildcard:
             run_arkmodels_unpacking(["arts/dynchars"], temp_dir_3)
         if order == "5" or wildcard:
@@ -360,7 +443,13 @@ def run_arkvoice_unpacking(dir, destdir1, destdir2, wildcard=False):
             rmdir(destdir1)
             title("ArkUnpacker - Processing")
             AU_Rs.main(
-                dir, destdir1, do_img=False, do_txt=False, do_aud=True, do_spine=False
+                dir,
+                destdir1,
+                do_del=False,
+                do_img=False,
+                do_txt=False,
+                do_aud=True,
+                separate=True,
             )
         if order == "2" or wildcard:
             if not osp.exists(destdir1):
@@ -446,35 +535,6 @@ def run_arkvoice_workflow():
             return
 
 
-def validate_input_output_arg(
-    parser: argparse.ArgumentParser,
-    args: argparse.Namespace,
-    allow_file_input: bool = False,
-):
-    if not getattr(args, "input", None):
-        parser.error("input should be defined in this mode")
-    if not getattr(args, "output", None):
-        parser.error("output should be defined in this mode")
-    if not allow_file_input and os.path.isfile(args.input):
-        parser.error("input should be a directory, not file")
-    if not os.path.isdir(args.input) and not (
-        allow_file_input and os.path.isfile(args.input)
-    ):
-        parser.error(
-            f"input should be a {'file or ' if allow_file_input else ''}directory that exists"
-        )
-
-
-def validate_logging_level_arg(
-    parer: argparse.ArgumentParser, args: argparse.Namespace
-):
-    if getattr(args, "logging_level", None) is None:
-        return
-    if args.logging_level not in range(5):
-        parser.error("invalid logging level")
-    Logger.set_level(args.logging_level)
-
-
 class UserInput:
     CANCEL_CMD = "*"
 
@@ -496,13 +556,35 @@ class UserInput:
         return uin
 
     @staticmethod
-    def request_path():
+    def request_input_path():
         print(f'  输入符号 "{UserInput.CANCEL_CMD}" 以取消任务，支持输入相对路径')
-        uin = osp.normpath(UserInput.request())
-        while not osp.exists(uin):
-            print("  输入的路径不存在", c=3)
-            uin = osp.normpath(UserInput.request())
-        return uin
+        while True:
+            uin = UserInput.request().strip()
+            if not uin:
+                print("  路径不能为空", c=3)
+                continue
+            uin = osp.normpath(uin)
+            if not osp.exists(uin):
+                print("  输入的路径不存在", c=3)
+                continue
+            return osp.abspath(uin)
+
+    @staticmethod
+    def request_output_path(default_generator: Optional[Callable[[], str]] = None):
+        print("  支持相对路径" + ("，留空表示自动创建" if default_generator else ""))
+        while True:
+            uin = UserInput.request().strip()
+            if not uin:
+                if default_generator:
+                    return osp.abspath(default_generator())
+                else:
+                    print("  路径不能为空", c=3)
+                    continue
+            uin = osp.normpath(uin)
+            if re.search(r'[*?"<>|\x00-\x1F]', uin):
+                print("  路径不能包含非法字符", c=3)
+                continue
+            return osp.abspath(uin)
 
     @staticmethod
     def request_yes_or_no(default: bool):
@@ -521,6 +603,8 @@ if __name__ == "__main__":
         Logger.info("CI: Initialized")
         print("")
         args = parser.parse_args()
+        parser.validate_logging_level_arg(args)
+        Logger.set_level(args.logging_level)
         if getattr(args, "mode", None) is None:
             # No argument input -> ENTER -> Interactive CLI mode
             while True:
@@ -541,8 +625,11 @@ if __name__ == "__main__":
                         run_custom_textasset_decode()
                         prt_continue()
                     elif order == "5":
-                        run_arkmodels_workflow()
+                        run_custom_resolve_spine()
+                        prt_continue()
                     elif order == "6":
+                        run_arkmodels_workflow()
+                    elif order == "7":
                         run_arkvoice_workflow()
                     elif order == "0":
                         print("\n用户退出")
@@ -552,9 +639,8 @@ if __name__ == "__main__":
                     print("\n[InterruptedError] 用户轻度中止", c=3)
         else:
             # Has arguments input -> GOTO -> The specified mode
-            validate_logging_level_arg(parser, args)
             if args.mode == "ab":
-                validate_input_output_arg(parser, args, allow_file_input=True)
+                parser.validate_input_output_arg(args, allow_file_input=True)
                 AU_Rs.main(
                     args.input,
                     args.output,
@@ -562,14 +648,22 @@ if __name__ == "__main__":
                     args.image,
                     args.text,
                     args.audio,
-                    args.spine,
+                    args.mesh,
+                    args.group,
+                )
+            elif args.mode == "sp":
+                parser.validate_input_output_arg(args, allow_file_input=True)
+                AU_Sp.main(
+                    args.input,
+                    args.output,
+                    args.d,
                     args.group,
                 )
             elif args.mode == "cb":
-                validate_input_output_arg(parser, args)
+                parser.validate_input_output_arg(args)
                 AU_Cb.main(args.input, args.output, args.d)
             elif args.mode == "fb":
-                validate_input_output_arg(parser, args)
+                parser.validate_input_output_arg(args)
                 AU_Fb.main(args.input, args.output, args.d)
     # Global error handlers
     except SystemExit as arg:

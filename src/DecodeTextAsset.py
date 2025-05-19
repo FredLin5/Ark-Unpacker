@@ -181,7 +181,9 @@ class FBOHandler:
         if isinstance(obj, FBOHandler.SERIALIZE_AS_IS):
             return obj
         if isinstance(obj, FBOHandler.SERIALIZE_AS_STR):
-            return str(obj, encoding=FBOHandler.SERIALIZE_ENCODING)
+            return str(
+                obj, encoding=FBOHandler.SERIALIZE_ENCODING, errors="surrogateescape"
+            )
         return FBOHandler._to_json_dict(obj)
 
     @staticmethod
@@ -337,7 +339,7 @@ def main(rootdir: str, destdir: str, do_del: bool = False):
     SafeSaver.get_instance().reset_counter()
     thread_ctrl = ThreadCtrl()
     ui = UICtrl()
-    tr_processed = TaskReporter(2)
+    tr_processed = TaskReporter(2, len(flist))
     tr_file_saving = TaskReporter(1)
     tracker = TaskReporterTracker(tr_processed, tr_file_saving)
 
